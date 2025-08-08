@@ -36,6 +36,7 @@
 namespace ov_core {
 struct ImuData;
 struct CameraData;
+struct GnssData;
 class TrackBase;
 class FeatureInitializer;
 } // namespace ov_core
@@ -79,6 +80,12 @@ public:
    * @param message Contains our timestamp, images, and camera ids
    */
   void feed_measurement_camera(const ov_core::CameraData &message) { track_image_and_update(message); }
+
+  /**
+   * @brief Feed function for GNSS measurements
+   * @param message Contains our timestamp and GNSS information
+   */
+  void feed_measurement_gnss(const ov_core::GnssData &message) { gnss_update(message); }
 
   /**
    * @brief Feed function for a synchronized simulated cameras
@@ -128,6 +135,9 @@ public:
     image = active_image;
   }
 
+  /// Set the initial GNSS position in LLA after initialization
+  void set_initial_gnss_position(const Eigen::Vector3d &pos) { initial_gnss_position = pos; }
+
   /// Returns active tracked features in the current frame
   void get_active_tracks(double &timestamp, std::unordered_map<size_t, Eigen::Vector3d> &feat_posinG,
                          std::unordered_map<size_t, Eigen::Vector3d> &feat_tracks_uvd) {
@@ -176,6 +186,13 @@ protected:
    */
   void retriangulate_active_tracks(const ov_core::CameraData &message);
 
+  /**
+   * @brief This function will process GNSS measurements and update the state
+   *
+   * @param message Contains GNSS data
+   */
+  void gnss_update(const ov_core::GnssData &message);
+
   /// Manager parameters
   VioManagerOptions params;
 
@@ -196,6 +213,9 @@ protected:
 
   /// Boolean if we are initialized or not
   bool is_initialized_vio = false;
+
+  /// Initial GNSS position in LLA
+  Eigen::Vector3d initial_gnss_position;
 
   /// Our MSCKF feature updater
   std::shared_ptr<UpdaterMSCKF> updaterMSCKF;

@@ -712,3 +712,8 @@ void VioManager::do_feature_propagate_update(const ov_core::CameraData &message)
                state->_calib_imu_tg->value()(7), state->_calib_imu_tg->value()(8));
   }
 }
+
+void VioManager::gnss_update(const ov_core::GnssData &message) {
+
+
+} 

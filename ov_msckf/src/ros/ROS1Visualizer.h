@@ -54,6 +54,7 @@
 namespace ov_core {
 class YamlParser;
 struct CameraData;
+struct GnssData;
 } // namespace ov_core
 
 namespace ov_msckf {
@@ -114,6 +115,9 @@ public:
   /// Callback for synchronized stereo camera information
   void callback_stereo(const sensor_msgs::ImageConstPtr &msg0, const sensor_msgs::ImageConstPtr &msg1, int cam_id0, int cam_id1);
 
+  /// Callback for GNSS information
+  void callback_gnss(const sensor_msgs::NavSatFixConstPtr &msg);
+
 protected:
   /// Publish the current state
   void publish_state();
@@ -149,6 +153,7 @@ protected:
   // Our subscribers and camera synchronizers
   ros::Subscriber sub_imu;
   std::vector<ros::Subscriber> subs_cam;
+  ros::Subscriber sub_gnss;
   typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
   std::vector<std::shared_ptr<message_filters::Synchronizer<sync_pol>>> sync_cam;
   std::vector<std::shared_ptr<message_filters::Subscriber<sensor_msgs::Image>>> sync_subs_cam;
@@ -181,6 +186,10 @@ protected:
 
   // Last camera message timestamps we have received (mapped by cam id)
   std::map<int, double> camera_last_timestamp;
+
+  // Queue up GNSS measurements sorted by time
+  std::deque<ov_core::GnssData> gnss_queue;
+  std::mutex gnss_queue_mtx;
 
   // Last timestamp we visualized at
   double last_visualization_timestamp = 0;

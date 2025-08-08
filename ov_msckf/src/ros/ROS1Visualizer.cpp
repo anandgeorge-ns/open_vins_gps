@@ -192,6 +192,13 @@ void ROS1Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
       PRINT_INFO("subscribing to cam (mono): %s\n", cam_topic.c_str());
     }
   }
+
+  // Create GNSS subscriber
+  std::string topic_gnss;
+  _nh->param<std::string>("topic_gnss", topic_gnss, "/gnss");
+  parser->parse_external("relative_config_gnss", "gnss", "rostopic", topic_gnss);
+  sub_gnss = _nh->subscribe(topic_gnss, 30, &ROS1Visualizer::callback_gnss, this);
+  PRINT_INFO("subscribing to GNSS: %s\n", topic_gnss.c_str());
 }
 
 void ROS1Visualizer::visualize() {
@@ -456,33 +463,59 @@ void ROS1Visualizer::callback_inertial(const sensor_msgs::Imu::ConstPtr &msg) {
   std::thread thread([&] {
     // Lock on the queue (prevents new images from appending)
     std::lock_guard<std::mutex> lck(camera_queue_mtx);
+    std::lock_guard<std::mutex> lck_gnss(gnss_queue_mtx);
 
-    // Count how many unique image streams
-    std::map<int, bool> unique_cam_ids;
-    for (const auto &cam_msg : camera_queue) {
-      unique_cam_ids[cam_msg.sensor_ids.at(0)] = true;
-    }
+    while (true) {
+      double next_camera_time = camera_queue.empty() ? std::numeric_limits<double>::max() : camera_queue.at(0).timestamp;
+      double next_gnss_time = gnss_queue.empty() ? std::numeric_limits<double>::max() : gnss_queue.at(0).timestamp;
 
-    // If we do not have enough unique cameras then we need to wait
-    // We should wait till we have one of each camera to ensure we propagate in the correct order
-    auto params = _app->get_params();
-    size_t num_unique_cameras = (params.state_options.num_cameras == 2) ? 1 : params.state_options.num_cameras;
-    if (unique_cam_ids.size() == num_unique_cameras) {
+      if (next_camera_time > message.timestamp && next_gnss_time > message.timestamp) {
+        // If we do not have any camera or gnss measurements that are older than the IMU measurement then we can break
+        break;
+      }
 
-      // Loop through our queue and see if we are able to process any of our camera measurements
-      // We are able to process if we have at least one IMU measurement greater than the camera time
-      double timestamp_imu_inC = message.timestamp - _app->get_state()->_calib_dt_CAMtoIMU->value()(0);
-      while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
+      // process images if they arrived before GNSS and IMU measurements
+      if (next_camera_time < next_gnss_time && next_camera_time < message.timestamp) {
+        // Count how many unique image streams
+        std::map<int, bool> unique_cam_ids;
+        for (const auto &cam_msg : camera_queue) {
+          unique_cam_ids[cam_msg.sensor_ids.at(0)] = true;
+        }
+
+        // If we do not have enough unique cameras then we need to wait
+        // We should wait till we have one of each camera to ensure we propagate in the correct order
+        auto params = _app->get_params();
+        size_t num_unique_cameras = (params.state_options.num_cameras == 2) ? 1 : params.state_options.num_cameras;
+        if (unique_cam_ids.size() == num_unique_cameras) {
+
+          // Loop through our queue and see if we are able to process any of our camera measurements
+          // We are able to process if we have at least one IMU measurement greater than the camera time
+          double timestamp_imu_inC = message.timestamp - _app->get_state()->_calib_dt_CAMtoIMU->value()(0);
+          while (!camera_queue.empty() && camera_queue.at(0).timestamp < timestamp_imu_inC) {
+            auto rT0_1 = boost::posix_time::microsec_clock::local_time();
+            double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
+            _app->feed_measurement_camera(camera_queue.at(0));
+            visualize();
+            camera_queue.pop_front();
+            auto rT0_2 = boost::posix_time::microsec_clock::local_time();
+            double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
+            PRINT_INFO(BLUE "[TIME]: Camera Update: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
+          }
+        }
+      }
+      else if (next_gnss_time < message.timestamp) {
+        double timestamp_imu_inC = message.timestamp; // TODO: Need to find the dt of gps measurements and IMU messages and subtract it.
         auto rT0_1 = boost::posix_time::microsec_clock::local_time();
         double update_dt = 100.0 * (timestamp_imu_inC - camera_queue.at(0).timestamp);
-        _app->feed_measurement_camera(camera_queue.at(0));
+        _app->feed_measurement_gnss(gnss_queue.at(0));
         visualize();
-        camera_queue.pop_front();
+        gnss_queue.pop_front();
         auto rT0_2 = boost::posix_time::microsec_clock::local_time();
         double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
-        PRINT_INFO(BLUE "[TIME]: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
+        PRINT_INFO(BLUE "[TIME]: GNSS Update: %.4f seconds total (%.1f hz, %.2f ms behind)\n" RESET, time_total, 1.0 / time_total, update_dt);
       }
     }
+  
     thread_update_running = false;
   });
 
@@ -586,6 +619,28 @@ void ROS1Visualizer::callback_stereo(const sensor_msgs::ImageConstPtr &msg0, con
   std::lock_guard<std::mutex> lck(camera_queue_mtx);
   camera_queue.push_back(message);
   std::sort(camera_queue.begin(), camera_queue.end());
+}
+
+void ROS1Visualizer::callback_gnss(const sensor_msgs::NavSatFixConstPtr &msg) {
+
+  // convert to our message format
+  ov_core::GnssData message;
+  message.timestamp = msg->header.stamp.toSec();
+  message.lla << msg->longitude, msg->latitude, msg->altitude;
+  message.covariance = Eigen::Matrix<double, 3, 3>::Zero();
+  for (size_t i = 0; i < 9; ++i) {
+    message.covariance(i / 3, i % 3) = msg->position_covariance[i];
+  }
+
+  // append it to our queue of GNSS measurements
+  std::lock_guard<std::mutex> lck(gnss_queue_mtx);
+  gnss_queue.push_back(message);
+  std::sort(gnss_queue.begin(), gnss_queue.end());
+
+  // update the initial gnss position till VIO is initilized
+  if (!_app->initialized()) {
+    _app->set_initial_gnss_position(message.lla);
+  }
 }
 
 void ROS1Visualizer::publish_state() {

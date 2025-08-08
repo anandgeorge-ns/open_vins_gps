@@ -78,6 +78,26 @@ struct CameraData {
   }
 };
 
+/**
+ * @brief Struct for a collection of GNSS measurements.
+ *
+ * For each GNSS reading we have a timestamp, position and covariance.
+ */
+struct GnssData {
+
+  /// Timestamp of the reading
+  double timestamp;
+
+  /// Position (latitude, longitude, altitude) in WGS84
+  Eigen::Matrix<double, 3, 1> lla;
+
+  /// Covariance of the position in WGS84
+  Eigen::Matrix<double, 3, 3> covariance;
+
+  /// Sort function to allow for using of STL containers
+  bool operator<(const GnssData &other) const { return timestamp < other.timestamp; }
+};
+
 } // namespace ov_core
 
 #endif // OV_CORE_SENSOR_DATA_H
